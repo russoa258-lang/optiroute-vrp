@@ -4,4 +4,4 @@ numpy
 folium
 streamlit-folium
 ortools
-
+geopy
