@@ -1,8 +1,8 @@
-streamlit>=1.28.0
+streamlit
 pandas
 numpy
-folium>=0.14.0
-streamlit-folium>=0.15.0
+folium
+streamlit-folium
 ortools
 geopy
 openpyxl
