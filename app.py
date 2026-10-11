@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import folium
-from streamlit_folium import st_folium
+from streamlit_folium import folium_static  # <-- MODIFICA 1: Importiamo la versione statica
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 import math
@@ -234,7 +234,9 @@ with col_map:
     if not st.session_state.optimized:
         for _, row in df.iloc[1:].iterrows():
             folium.CircleMarker(location=[row['Lat'], row['Lon']], radius=5, color='#333', fill=True, popup=f"{row['Nome']}: {row['Kg']} Kg").add_to(m)
-        st_folium(m, width="100%", height=550, key="map_init")
+        
+        # <-- MODIFICA 2: Sostituito st_folium con folium_static. Dimensioni in pixel interi.
+        folium_static(m, width=800, height=550) 
     else:
         for v_idx, route in enumerate(st.session_state.routes):
             color = PALETTE[v_idx % len(PALETTE)]
@@ -245,7 +247,9 @@ with col_map:
                 if node != 0:
                     folium.CircleMarker(location=[lat, lon], radius=6, color=color, fill=True, fill_color=color, fill_opacity=0.9, popup=f"Veicolo {v_idx+1} | {df.iloc[node]['Nome']}").add_to(m)
             folium.PolyLine(coords, color=color, weight=4, opacity=0.8).add_to(m)
-        st_folium(m, width="100%", height=550, key="map_opt")
+            
+        # <-- MODIFICA 3: Sostituito st_folium con folium_static. Dimensioni in pixel interi.
+        folium_static(m, width=800, height=550)
 
 with col_metrics:
     st.subheader("Impatto Finanziario")
