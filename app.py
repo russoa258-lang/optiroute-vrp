@@ -224,7 +224,10 @@ PALETTE = ['#0072B2', '#009E73', '#D55E00', '#CC79A7', '#F0E442', '#56B4E9']
 with col_map:
     st.subheader("Mappa Tattica di Consegna (Reggio Emilia)")
     # Mappa base OpenStreetMap (Niente API Key richiesta)
-    m = folium.Map(location=[44.6982, 10.6312], zoom_start=11)
+    # Centra la mappa dinamicamente in base alla città caricata nel CSV
+    centro_lat = df['Lat'].mean()
+    centro_lon = df['Lon'].mean()
+    m = folium.Map(location=[centro_lat, centro_lon], zoom_start=11)
     
     # HUB di partenza
     folium.Marker(
