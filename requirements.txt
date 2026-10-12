@@ -6,3 +6,4 @@ streamlit-folium
 ortools
 geopy
 openpyxl
+requests
