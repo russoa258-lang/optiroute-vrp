@@ -3,10 +3,10 @@ import pandas as pd
 import numpy as np
 import folium
 import requests
+import re
 from streamlit_folium import folium_static
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
-import time
 
 # ==========================================
 # 1. SETUP UI PROFESSIONALE & ITALIANA
@@ -32,7 +32,7 @@ for key in ['optimized', 'routes', 'total_km', 'df_nodes']:
         st.session_state[key] = None if 'df' in key else (False if type(key) == bool else [])
 
 # ==========================================
-# 2. GEOCODING CON GESTIONE ERRORI
+# 2. GEOCODING & DATA SANITIZATION (MIDDLEWARE)
 # ==========================================
 @st.cache_data(show_spinner=False)
 def geocode_addresses(df):
@@ -42,13 +42,27 @@ def geocode_addresses(df):
     geolocator = Nominatim(user_agent="optiroute_ita_business_v2")
     geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1.2)
     
+    # --- MIDDLEWARE DI PULIZIA DATI ---
+    def clean_address(addr):
+        # Aggiunge automaticamente una virgola tra il civico e la lettera successiva
+        # Previene l'errore classico: "Via Roma 15 Milano" -> "Via Roma 15, Milano"
+        return re.sub(r'(\d+)\s+([A-Za-z])', r'\1, \2', str(addr))
+    # ----------------------------------
+
     lats, lons = [], []
-    progress_bar = st.progress(0, text="Geocodifica indirizzi in corso...")
+    progress_bar = st.progress(0, text="Sanificazione e geocodifica indirizzi in corso...")
     
     for i, address in enumerate(df['Indirizzo']):
         try:
-            full_address = address if "italy" in address.lower() or "italia" in address.lower() else f"{address}, Italia"
+            # 1. Pulizia preventiva dell'indirizzo
+            safe_address = clean_address(address)
+            
+            # 2. Aggiunta contesto geografico
+            full_address = safe_address if "italy" in safe_address.lower() or "italia" in safe_address.lower() else f"{safe_address}, Italia"
+            
+            # 3. Chiamata API
             location = geocode(full_address)
+            
             if location:
                 lats.append(location.latitude)
                 lons.append(location.longitude)
@@ -78,14 +92,12 @@ def build_real_distance_matrix(df):
         response = requests.get(url, timeout=10)
         data = response.json()
         if data['code'] == 'Ok':
-            # OSRM restituisce float, OR-Tools ha bisogno di interi (arrotondiamo)
             matrix = np.array(data['distances']).astype(int).tolist()
             return matrix
         else:
             raise Exception("Errore API OSRM")
     except Exception as e:
         st.warning("Server di routing sovraccarico. Fallback su matrice distanze matematiche (Haversine).")
-        # Fallback Haversine (vecchio metodo) se le API pubbliche cadono
         coords = np.radians(df[['Lat', 'Lon']].to_numpy())
         lat, lon = coords[:, 0], coords[:, 1]
         dlat, dlon = lat[:, np.newaxis] - lat, lon[:, np.newaxis] - lon
@@ -121,7 +133,7 @@ def run_solver(matrix, demands, n_vehicles, cap):
     params = pywrapcp.DefaultRoutingSearchParameters()
     params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
     params.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
-    params.time_limit.seconds = 2 # Tempo di calcolo aumentato per risultati migliori
+    params.time_limit.seconds = 2 
 
     solution = routing.SolveWithParameters(params)
     if not solution: return [], 0
@@ -140,7 +152,7 @@ def run_solver(matrix, demands, n_vehicles, cap):
         if len(route) > 2:
             routes.append(route)
             tot_dist += route_dist
-    return routes, tot_dist / 1000 # Ritorna i km
+    return routes, tot_dist / 1000
 
 # ==========================================
 # 5. PANNELLO LATERALE E INPUT IBRIDO
@@ -148,13 +160,11 @@ def run_solver(matrix, demands, n_vehicles, cap):
 with st.sidebar:
     st.header("1. Input Dati")
     
-    # PUNTO 1: TEMPLATE SCARICABILE
     template_csv = "Nome,Indirizzo,Kg\nHUB Principale,Piazza del Duomo 1 Milano,0\nCliente Alfa,Via Roma 10 Torino,250\nCliente Beta,Via Mazzini 5 Bologna,180"
     st.download_button(label="📄 Scarica Template Esempio", data=template_csv, file_name="template_optiroute.csv", mime="text/csv", use_container_width=True)
     st.markdown("---")
     
-    # PUNTO 2: METODO DI INSERIMENTO IBRIDO
-    input_method = st.radio("Come vuoi inserire gli ordini?", ["Carica File CSV/Excel", "Inserimento Manuale Tabellare"])
+    input_method = st.radio("Metodo di Inserimento:", ["Carica File CSV/Excel", "Inserimento Manuale Tabellare"])
     
     raw_df = None
     if input_method == "Carica File CSV/Excel":
@@ -162,19 +172,17 @@ with st.sidebar:
         if uploaded_file:
             raw_df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
     else:
-        st.markdown("Modifica la tabella qui sotto. La prima riga è il Deposito.")
+        st.markdown("Compila la tabella (La prima riga è il Deposito).")
         default_data = pd.DataFrame({
-            "Nome": ["HUB", "Cliente 1", "Cliente 2", "Cliente 3"],
-            "Indirizzo": ["Piazza Maggiore 1, Bologna", "Via Indipendenza 5, Bologna", "Via Emilia Est 10, Modena", "Via Roma 2, Parma"],
-            "Kg": [0, 100, 150, 200]
+            "Nome": ["HUB Logistica", "Cliente 1", "Cliente 2", "Cliente 3"],
+            "Indirizzo": ["Via Emilia all'Ospizio 50, Reggio Emilia", "Via Roma 15, Reggio Emilia", "Via Guido Arezzo 5, Reggio Emilia", "Via Togliatti 8, Cavriago"],
+            "Kg": [0, 45, 120, 30]
         })
-        # L'utente può aggiungere/rimuovere righe dinamicamente!
         raw_df = st.data_editor(default_data, num_rows="dynamic", use_container_width=True)
 
     st.markdown("---")
     st.header("2. Vincoli Flotta e Viabilità")
     
-    # PUNTO 4: PREDISPOSIZIONE PER PROFILI VEICOLO (Dimostrazione architetturale)
     profilo = st.selectbox("Profilo Veicolo (Impatta su strade e pedaggi)", ["Furgone Light (< 3.5t)", "Camion Pesante (> 7.5t)", "Auto / Commerciale"])
     st.caption("Nota: L'engine eviterà automaticamente le ZTL e i ponti non idonei in base al profilo selezionato.")
     
@@ -186,7 +194,7 @@ with st.sidebar:
     esegui = st.button("🚀 AVVIA OTTIMIZZATORE STRADALE", use_container_width=True)
 
 # ==========================================
-# 6. LOGICA DI ESECUZIONE E GESTIONE ERRORI
+# 6. ESECUZIONE E GRACEFUL DEGRADATION
 # ==========================================
 if esegui:
     if raw_df is not None and not raw_df.empty:
@@ -197,20 +205,15 @@ if esegui:
         with st.spinner("Geocodifica e calcolo strade in corso..."):
             df_geo = geocode_addresses(raw_df)
             
-            # PUNTO 3: GESTIONE ERRORI INDIRIZZI
+            # GESTIONE ERRORI INDIRIZZI (Graceful Degradation)
             error_df = df_geo[df_geo['Lat'].isna()]
             if not error_df.empty:
                 st.warning("⚠️ **Attenzione: Geocodifica Incompleta**")
                 st.markdown("I seguenti indirizzi non sono stati riconosciuti dal sistema cartografico. Modifica i dati e riprova.")
-                
-                # Mostriamo solo le colonne utili in una tabella pulita
                 st.table(error_df[['Nome', 'Indirizzo']].reset_index(drop=True))
-                
-                # Suggerimento UX per l'operatore
-                st.info("💡 *Suggerimento: Assicurati di inserire via, numero civico e città (es. 'Via Roma 1, Milano').*")
-                st.stop() # Interrompe l'esecuzione in modo pulito, in attesa dell'azione utenteD
+                st.info("💡 *Suggerimento: Controlla eventuali errori di battitura o nomi di vie inesatti.*")
+                st.stop()
             
-            # Se va tutto bene, calcoliamo i percorsi
             st.session_state.df_nodes = df_geo
             matrix = build_real_distance_matrix(st.session_state.df_nodes)
             
@@ -226,13 +229,13 @@ if esegui:
         st.warning("⚠️ Fornisci dei dati (CSV o Tabella) per iniziare.")
 
 # ==========================================
-# 7. DASHBOARD E MAPPA REALE (Strade vere)
+# 7. DASHBOARD E MAPPA REALE
 # ==========================================
 df = st.session_state.get('df_nodes')
 
 if st.session_state.optimized and df is not None:
     tot_km = st.session_state.total_km
-    manual_km = tot_km * 1.35 # Stimiamo che la pianificazione umana faccia il 35% di km in più
+    manual_km = tot_km * 1.35 
     km_risparmiati = manual_km - tot_km
     eur_risparmiati = km_risparmiati * fuel_cost * 22
     
@@ -253,24 +256,21 @@ if st.session_state.optimized and df is not None:
         sw = df[['Lat', 'Lon']].min().values.tolist()
         ne = df[['Lat', 'Lon']].max().values.tolist()
         
-        m = folium.Map(tiles='CartoDB Positron') # Mappa più professionale e pulita
+        m = folium.Map(tiles='CartoDB Positron')
         m.fit_bounds([sw, ne])
         
-        # Disegno HUB
         folium.Marker([df.iloc[0]['Lat'], df.iloc[0]['Lon']], popup="HUB Centrale", icon=folium.Icon(color='black', icon='home')).add_to(m)
 
         for v_idx, route in enumerate(st.session_state.routes):
             color = PALETTE[v_idx % len(PALETTE)]
-            
-            # Raccogliamo le coordinate per questo specifico percorso
             route_coords = []
+            
             for node in route:
                 lat, lon = df.iloc[node]['Lat'], df.iloc[node]['Lon']
                 route_coords.append((lat, lon))
                 if node != 0:
                     folium.CircleMarker(location=[lat, lon], radius=7, color=color, fill=True, fill_opacity=1, popup=df.iloc[node]['Nome']).add_to(m)
             
-            # PUNTO 4: OTTENIAMO IL TRACCIATO REALE DELLE STRADE E LO DISEGNIAMO
             geojson_route = get_real_route_geometry(route_coords)
             if geojson_route:
                 folium.GeoJson(
@@ -278,7 +278,6 @@ if st.session_state.optimized and df is not None:
                     style_function=lambda x, color=color: {'color': color, 'weight': 5, 'opacity': 0.8}
                 ).add_to(m)
             else:
-                # Fallback: se l'API non risponde, fa una linea retta
                 folium.PolyLine(route_coords, color=color, weight=4, dash_array='10').add_to(m)
                 
         folium_static(m, width=900, height=600)
