@@ -199,10 +199,16 @@ if esegui:
             
             # PUNTO 3: GESTIONE ERRORI INDIRIZZI
             error_df = df_geo[df_geo['Lat'].isna()]
-            if not error_df.empty():
-                st.error("🛑 Errore di Geocodifica! I seguenti indirizzi non sono stati trovati su mappa. Correggili e riprova.")
-                st.dataframe(error_df[['Nome', 'Indirizzo']])
-                st.stop() # Blocca il codice qui, evitando crash successivi
+            if not error_df.empty:
+                st.warning("⚠️ **Attenzione: Geocodifica Incompleta**")
+                st.markdown("I seguenti indirizzi non sono stati riconosciuti dal sistema cartografico. Modifica i dati e riprova.")
+                
+                # Mostriamo solo le colonne utili in una tabella pulita
+                st.table(error_df[['Nome', 'Indirizzo']].reset_index(drop=True))
+                
+                # Suggerimento UX per l'operatore
+                st.info("💡 *Suggerimento: Assicurati di inserire via, numero civico e città (es. 'Via Roma 1, Milano').*")
+                st.stop() # Interrompe l'esecuzione in modo pulito, in attesa dell'azione utenteD
             
             # Se va tutto bene, calcoliamo i percorsi
             st.session_state.df_nodes = df_geo
