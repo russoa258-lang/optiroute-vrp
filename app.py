@@ -258,7 +258,7 @@ if st.session_state.optimized and df is not None:
         sw = df[['Lat', 'Lon']].min().values.tolist()
         ne = df[['Lat', 'Lon']].max().values.tolist()
         
-        m = folium.Map(tiles='CartoDB Positron')
+        m = folium.Map(tiles='OpenStreetMap')
         m.fit_bounds([sw, ne])
         
         folium.Marker([df.iloc[0]['Lat'], df.iloc[0]['Lon']], popup="HUB Centrale", icon=folium.Icon(color='black', icon='home')).add_to(m)
