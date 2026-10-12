@@ -31,16 +31,22 @@ for key in ['optimized', 'routes', 'total_km', 'df_nodes']:
     if key not in st.session_state: 
         st.session_state[key] = None if 'df' in key else (False if type(key) == bool else [])
 
+
+import re 
 # ==========================================
 # 2. GEOCODING & DATA SANITIZATION (MIDDLEWARE)
 # ==========================================
 @st.cache_data(show_spinner=False)
 def geocode_addresses(df):
-    from geopy.geocoders import Nominatim
+    # Passiamo da Nominatim ad ArcGIS: tolleranza agli errori umani e NLP integrato
+    from geopy.geocoders import ArcGIS 
     from geopy.extra.rate_limiter import RateLimiter
+
     
-    geolocator = Nominatim(user_agent="optiroute_ita_business_v2")
-    geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1.2)
+    # Inizializziamo il geocoder di livello Enterprise
+    geolocator = ArcGIS(user_agent="optiroute_ita_business_v3")
+    # ArcGIS è anche più veloce, possiamo abbassare il delay
+    geocode = RateLimiter(geolocator.geocode, min_delay_seconds=0.5)
     
     # --- MIDDLEWARE DI PULIZIA DATI ---
     def clean_address(addr):
@@ -48,19 +54,16 @@ def geocode_addresses(df):
         # Previene l'errore classico: "Via Roma 15 Milano" -> "Via Roma 15, Milano"
         return re.sub(r'(\d+)\s+([A-Za-z])', r'\1, \2', str(addr))
     # ----------------------------------
-
+    
     lats, lons = [], []
-    progress_bar = st.progress(0, text="Sanificazione e geocodifica indirizzi in corso...")
+    progress_bar = st.progress(0, text="Geocodifica NLP in corso (ArcGIS)...")
     
     for i, address in enumerate(df['Indirizzo']):
         try:
-            # 1. Pulizia preventiva dell'indirizzo
-            safe_address = clean_address(address)
+            # Aggiungiamo il contesto nazionale se manca
+            full_address = address if "italy" in address.lower() or "italia" in address.lower() else f"{address}, Italia"
             
-            # 2. Aggiunta contesto geografico
-            full_address = safe_address if "italy" in safe_address.lower() or "italia" in safe_address.lower() else f"{safe_address}, Italia"
-            
-            # 3. Chiamata API
+            # Chiamata all'API tollerante agli errori
             location = geocode(full_address)
             
             if location:
@@ -78,7 +81,6 @@ def geocode_addresses(df):
     df['Lat'] = lats
     df['Lon'] = lons
     return df
-
 # ==========================================
 # 3. INTEGRAZIONE STRADE REALI (OSRM API)
 # ==========================================
