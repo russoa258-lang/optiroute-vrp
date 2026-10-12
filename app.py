@@ -7,6 +7,7 @@ import re
 from streamlit_folium import folium_static
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
+from folium.plugins import PolyLineTextPath
 
 # ==========================================
 # 1. SETUP UI PROFESSIONALE & ITALIANA
@@ -31,27 +32,19 @@ for key in ['optimized', 'routes', 'total_km', 'df_nodes']:
     if key not in st.session_state: 
         st.session_state[key] = None if 'df' in key else (False if type(key) == bool else [])
 
-
-import re 
 # ==========================================
 # 2. GEOCODING & DATA SANITIZATION (MIDDLEWARE)
 # ==========================================
 @st.cache_data(show_spinner=False)
 def geocode_addresses(df):
-    # Passiamo da Nominatim ad ArcGIS: tolleranza agli errori umani e NLP integrato
     from geopy.geocoders import ArcGIS 
     from geopy.extra.rate_limiter import RateLimiter
-
     
-    # Inizializziamo il geocoder di livello Enterprise
     geolocator = ArcGIS(user_agent="optiroute_ita_business_v3")
-    # ArcGIS è anche più veloce, possiamo abbassare il delay
     geocode = RateLimiter(geolocator.geocode, min_delay_seconds=0.5)
     
     # --- MIDDLEWARE DI PULIZIA DATI ---
     def clean_address(addr):
-        # Aggiunge automaticamente una virgola tra il civico e la lettera successiva
-        # Previene l'errore classico: "Via Roma 15 Milano" -> "Via Roma 15, Milano"
         return re.sub(r'(\d+)\s+([A-Za-z])', r'\1, \2', str(addr))
     # ----------------------------------
     
@@ -60,10 +53,8 @@ def geocode_addresses(df):
     
     for i, address in enumerate(df['Indirizzo']):
         try:
-            # Aggiungiamo il contesto nazionale se manca
-            full_address = address if "italy" in address.lower() or "italia" in address.lower() else f"{address}, Italia"
-            
-            # Chiamata all'API tollerante agli errori
+            safe_address = clean_address(address)
+            full_address = safe_address if "italy" in safe_address.lower() or "italia" in safe_address.lower() else f"{safe_address}, Italia"
             location = geocode(full_address)
             
             if location:
@@ -72,7 +63,7 @@ def geocode_addresses(df):
             else:
                 lats.append(None)
                 lons.append(None)
-        except:
+        except Exception:
             lats.append(None)
             lons.append(None)
         progress_bar.progress((i + 1) / len(df))
@@ -81,12 +72,12 @@ def geocode_addresses(df):
     df['Lat'] = lats
     df['Lon'] = lons
     return df
+
 # ==========================================
 # 3. INTEGRAZIONE STRADE REALI (OSRM API)
 # ==========================================
 @st.cache_data(show_spinner=False)
 def build_real_distance_matrix(df):
-    """Chiama l'API stradale per ottenere le distanze reali su strada in metri."""
     coords = ";".join([f"{row['Lon']},{row['Lat']}" for _, row in df.iterrows()])
     url = f"http://router.project-osrm.org/table/v1/driving/{coords}?annotations=distance"
     
@@ -98,8 +89,8 @@ def build_real_distance_matrix(df):
             return matrix
         else:
             raise Exception("Errore API OSRM")
-    except Exception as e:
-        st.warning("Server di routing sovraccarico. Fallback su matrice distanze matematiche (Haversine).")
+    except Exception:
+        st.warning("Server di routing sovraccarico. Fallback su matrice distanze (Haversine).")
         coords = np.radians(df[['Lat', 'Lon']].to_numpy())
         lat, lon = coords[:, 0], coords[:, 1]
         dlat, dlon = lat[:, np.newaxis] - lat, lon[:, np.newaxis] - lon
@@ -108,14 +99,13 @@ def build_real_distance_matrix(df):
         return np.round((6371000 * c) * 1.3).astype(int).tolist()
 
 def get_real_route_geometry(route_coords):
-    """Ottiene il tracciato reale della strada per disegnare le curve esatte."""
     coords = ";".join([f"{lon},{lat}" for lat, lon in route_coords])
     url = f"http://router.project-osrm.org/route/v1/driving/{coords}?overview=full&geometries=geojson"
     try:
         response = requests.get(url, timeout=10).json()
         if response['code'] == 'Ok':
             return response['routes'][0]['geometry']
-    except:
+    except Exception:
         return None
     return None
 
@@ -186,8 +176,6 @@ with st.sidebar:
     st.header("2. Vincoli Flotta e Viabilità")
     
     profilo = st.selectbox("Profilo Veicolo (Impatta su strade e pedaggi)", ["Furgone Light (< 3.5t)", "Camion Pesante (> 7.5t)", "Auto / Commerciale"])
-    st.caption("Nota: L'engine eviterà automaticamente le ZTL e i ponti non idonei in base al profilo selezionato.")
-    
     n_vehicles = st.number_input("Mezzi Disponibili", min_value=1, value=3)
     capacity = st.number_input("Capacità Max (Kg)", min_value=10, value=1500, step=50)
     fuel_cost = st.number_input("Costo Medio €/Km", min_value=0.10, value=1.65, step=0.05)
@@ -207,18 +195,15 @@ if esegui:
         with st.spinner("Geocodifica e calcolo strade in corso..."):
             df_geo = geocode_addresses(raw_df)
             
-            # GESTIONE ERRORI INDIRIZZI (Graceful Degradation)
             error_df = df_geo[df_geo['Lat'].isna()]
             if not error_df.empty:
                 st.warning("⚠️ **Attenzione: Geocodifica Incompleta**")
-                st.markdown("I seguenti indirizzi non sono stati riconosciuti dal sistema cartografico. Modifica i dati e riprova.")
+                st.markdown("I seguenti indirizzi non sono stati riconosciuti. Modifica i dati e riprova.")
                 st.table(error_df[['Nome', 'Indirizzo']].reset_index(drop=True))
-                st.info("💡 *Suggerimento: Controlla eventuali errori di battitura o nomi di vie inesatti.*")
                 st.stop()
             
             st.session_state.df_nodes = df_geo
             matrix = build_real_distance_matrix(st.session_state.df_nodes)
-            
             routes, total_km = run_solver(matrix, st.session_state.df_nodes['Kg'].tolist(), n_vehicles, capacity)
             
             if routes:
@@ -226,7 +211,7 @@ if esegui:
                 st.session_state.total_km = total_km
                 st.session_state.optimized = True
             else:
-                st.error("❌ Impossibile trovare una soluzione. I veicoli non bastano o il carico di un cliente supera la capacità massima del mezzo.")
+                st.error("❌ Impossibile trovare una soluzione. I veicoli non bastano o la capacità è insufficiente.")
     else:
         st.warning("⚠️ Fornisci dei dati (CSV o Tabella) per iniziare.")
 
@@ -267,21 +252,44 @@ if st.session_state.optimized and df is not None:
             color = PALETTE[v_idx % len(PALETTE)]
             route_coords = []
             
-            for node in route:
+            for step, node in enumerate(route):
                 lat, lon = df.iloc[node]['Lat'], df.iloc[node]['Lon']
                 route_coords.append((lat, lon))
+                
                 if node != 0:
-                    folium.CircleMarker(location=[lat, lon], radius=7, color=color, fill=True, fill_opacity=1, popup=df.iloc[node]['Nome']).add_to(m)
+                    html_marker = f"""
+                    <div style="background-color: {color}; border: 2px white solid; border-radius: 50%;
+                                width: 24px; height: 24px; display: flex; justify-content: center;
+                                align-items: center; color: white; font-weight: bold; font-size: 11px;
+                                font-family: 'Inter', sans-serif; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">
+                        {step}
+                    </div>
+                    """
+                    folium.Marker(
+                        location=[lat, lon],
+                        icon=folium.DivIcon(html=html_marker, icon_size=(24, 24), icon_anchor=(12, 12)),
+                        popup=f"Tappa {step}: {df.iloc[node]['Nome']} ({df.iloc[node]['Kg']} Kg)"
+                    ).add_to(m)
             
             geojson_route = get_real_route_geometry(route_coords)
             if geojson_route:
-                folium.GeoJson(
-                    geojson_route,
-                    style_function=lambda x, color=color: {'color': color, 'weight': 5, 'opacity': 0.8}
+                # Invertiamo le coordinate da [Lon, Lat] a [Lat, Lon] per renderle compatibili con PolyLine
+                real_coords = [[coord[1], coord[0]] for coord in geojson_route['coordinates']]
+                
+                polyline = folium.PolyLine(real_coords, color=color, weight=5, opacity=0.8).add_to(m)
+                
+                PolyLineTextPath(
+                    polyline, "  ➤  ", repeat=True, offset=6,
+                    attributes={'fill': color, 'font-weight': 'bold', 'font-size': '16px'}
                 ).add_to(m)
             else:
-                folium.PolyLine(route_coords, color=color, weight=4, dash_array='10').add_to(m)
+                polyline = folium.PolyLine(route_coords, color=color, weight=4, dash_array='10').add_to(m)
+                PolyLineTextPath(
+                    polyline, "  ➤  ", repeat=True, offset=6,
+                    attributes={'fill': color, 'font-weight': 'bold', 'font-size': '14px'}
+                ).add_to(m)
                 
+        # QUESTA RIGA MANCAVA: È FONDAMENTALE PER MOSTRARE LA MAPPA!
         folium_static(m, width=900, height=600)
 
     with col_details:
